@@ -2211,7 +2211,16 @@ pub(crate) async fn build_local_model(
     engine_config: &EngineConfig,
     name_only: bool,
 ) -> Result<LocalModel, DynamoError> {
-    let mut builder = local_model_builder(config, engine_config, name_only).await?;
+    let mut builder = local_model_builder(config, engine_config).await?;
+    // Resolve model_name to a local path. Empty string or a raw media engine
+    // (`name_only`) → name-only card (no tokenizer/template): raw models carry
+    // no LLM artifacts to fetch and load themselves (cf. the legacy
+    // diffusion path's `ModelDeploymentCard::with_name_only()`).
+    if !config.model_name.is_empty() && !name_only {
+        let source = config.model_name.clone();
+        builder.model_path(fetch_model_files(&source).await?);
+        builder.source_path(PathBuf::from(source));
+    }
     builder.build().await.map_err(|e| {
         err(
             ErrorType::Backend(BackendError::Unknown),
@@ -2220,13 +2229,11 @@ pub(crate) async fn build_local_model(
     })
 }
 
-/// The builder of [`build_local_model`]'s model, with everything that waits
-/// done: the topology read and the model fetch. What is left, its `build`,
-/// only loads the model card from disk.
+/// The builder of [`build_local_model`]'s model, without the model's files:
+/// the caller says where they are. The topology read is done.
 pub(crate) async fn local_model_builder(
     config: &WorkerConfig,
     engine_config: &EngineConfig,
-    name_only: bool,
 ) -> Result<LocalModelBuilder, DynamoError> {
     let served_name = resolve_served_name(config, engine_config)
         .or_else(|| Some(engine_config.model.clone()))
@@ -2304,17 +2311,6 @@ pub(crate) async fn local_model_builder(
         .media_decoder(config.media_decoder.clone())
         .media_fetcher(config.media_fetcher.clone())
         .runtime_config(rt_cfg);
-
-    // Resolve model_name to a local path. Empty string or a raw media engine
-    // (`name_only`) → name-only card (no tokenizer/template): raw models carry
-    // no LLM artifacts to fetch and load themselves (cf. the legacy
-    // diffusion path's `ModelDeploymentCard::with_name_only()`).
-    if !config.model_name.is_empty() && !name_only {
-        let source = config.model_name.clone();
-        builder.model_path(fetch_model_files(&source).await?);
-        builder.source_path(PathBuf::from(source));
-    }
-
     Ok(builder)
 }
 
