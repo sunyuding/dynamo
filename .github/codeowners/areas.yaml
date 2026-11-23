@@ -284,7 +284,7 @@ areas:
   - dev/docker-observability.yml
   - dev/observability/
   - lib/llm/src/telemetry/
-  - lib/runtime/src/metrics.rs
+  - lib/metrics/
   - lib/runtime/src/metrics/
 - label: fault-tolerance
   github_team: '@ai-dynamo/dynamo-fault-tolerance-codeowners'
@@ -822,6 +822,10 @@ shared:
   - runtime
   - agents
   - observability
+- glob: lib/metrics/src/frontend_perf.rs
+  owners:
+  - observability
+  - frontend
 - glob: lib/runtime/src/health_check.rs
   owners:
   - runtime
@@ -830,10 +834,6 @@ shared:
   owners:
   - runtime
   - observability
-- glob: lib/runtime/src/metrics/frontend_perf.rs
-  owners:
-  - observability
-  - frontend
 - glob: lib/runtime/src/system_health.rs
   owners:
   - runtime

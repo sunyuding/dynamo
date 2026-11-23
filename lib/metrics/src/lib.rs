@@ -3,39 +3,20 @@
 
 //! Metrics registry trait and implementation for Prometheus metrics
 //!
-//! This module provides a trait-based interface for creating and managing Prometheus metrics
+//! This crate provides a trait-based interface for creating and managing Prometheus metrics
 //! with automatic label injection and hierarchical naming support.
 
 pub mod frontend_perf;
-pub mod otlp_export;
 pub mod prom_typed;
 pub mod prometheus_names;
-pub mod quic_response;
-pub mod request_plane;
-pub mod tokio_perf;
-pub mod transport_metrics;
-pub mod work_handler_perf;
-pub mod work_handler_pool;
 
-#[cfg(test)]
-mod tests;
-
-use parking_lot::Mutex;
+use anyhow::Context as _;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use anyhow;
-use anyhow::Context as _;
-use once_cell::sync::Lazy;
-use regex::Regex;
-use std::any::Any;
-use std::collections::HashMap;
-
 // Import commonly used items to avoid verbose prefixes
-use prometheus_names::{
-    build_metric_name, labels, name_prefix, sanitize_prometheus_label, sanitize_prometheus_name,
-    work_handler,
-};
+use prometheus_names::{build_metric_name, labels, name_prefix, sanitize_prometheus_label};
 
 // Prometheus imports
 use prometheus::Encoder;

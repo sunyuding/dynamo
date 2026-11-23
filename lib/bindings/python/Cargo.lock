@@ -2460,6 +2460,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dynamo-metrics"
+version = "1.8.0"
+dependencies = [
+ "anyhow",
+ "once_cell",
+ "prometheus",
+ "regex",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "dynamo-mocker"
 version = "1.8.0"
 dependencies = [
@@ -2738,6 +2750,7 @@ dependencies = [
  "derive-getters",
  "derive_builder",
  "dynamo-error",
+ "dynamo-metrics",
  "dynamo-truthy",
  "educe",
  "either",

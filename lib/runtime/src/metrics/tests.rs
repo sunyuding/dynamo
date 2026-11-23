@@ -161,6 +161,7 @@ mod test_metricsregistry_prefixes {
     use crate::distributed::distributed_test_utils::create_test_drt_async;
     use crate::metrics::*;
     use prometheus::core::Collector;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_hierarchical_prefixes_and_parent_hierarchies() {
