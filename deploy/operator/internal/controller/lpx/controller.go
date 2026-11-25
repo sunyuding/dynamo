@@ -85,7 +85,8 @@ func (r *graphReconciler) GetRecorder() events.EventRecorder {
 // +kubebuilder:rbac:groups=grove.io,resources=podcliquesets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=grove.io,resources=podcliques/scale;podcliquescalinggroups/scale,verbs=update
 // +kubebuilder:rbac:groups=scheduling.lpu.nvidia.com,resources=lpupipelinerequests,verbs=get;list;watch;create;delete
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;delete
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;patch;delete
+// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 
 // Reconcile observes dependencies once, then persists the final child status.
 // Workload observations use the cache; Grove validates writes against its installed API.
@@ -100,13 +101,13 @@ func (r *graphReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		return ctrl.Result{}, nil
 	}
 
-	var cleanupErr error
+	var cleanupErr, placementErr error
 
 	// Persist the combined outcome before converting errors into bounded retries.
 	defer func(previous *v1alpha1.LPXGraphDeploymentStatus) {
-		if cleanupErr != nil {
-			err = errors.Join(err, cleanupErr)
-			// A later workload wakeup must not postpone failed release cleanup.
+		if cleanupErr != nil || placementErr != nil {
+			err = errors.Join(err, cleanupErr, placementErr)
+			// A later workload wakeup must not postpone failed release cleanup or placement.
 			if result.RequeueAfter > 0 {
 				result.RequeueAfter = min(result.RequeueAfter, pipelineRequestDeadlineRetryInterval)
 			}
@@ -144,16 +145,11 @@ func (r *graphReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		return ctrl.Result{}, nil
 	}
 
-	// DGD identity and input revision are checked before any workload writes.
+	// DGD identity is checked before any workload write. Only the Cyborg fabric-pod
+	// placement precedes the input revision check, because it needs no DGD.
 	dgd, err := getDynamoGraphDeployment(ctx, r.Client, deployment)
 	if err != nil {
 		return ctrl.Result{}, err
-	}
-
-	// A cache miss or delayed handoff is not cleanup authority; owner GC handles deletion.
-	if dgd == nil {
-		setReadyCondition(deployment, v1beta1.DGDStatePending, "Waiting for the matching DynamoGraphDeployment")
-		return ctrl.Result{}, nil
 	}
 
 	// Resolve the owned Grove hierarchy from one cache observation.
@@ -194,6 +190,17 @@ func (r *graphReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	// A replacement Cyborg Pod of a serving replica must not wait behind its placement
+	// gate for the DGD handoff or a download. A placement error must not stop the
+	// PodCliqueSet write that corrects it.
+	placementErr = r.reconcileCyborgPlacement(ctx, pcs, pcsgs, pclqs, requests)
+
+	// A cache miss or delayed handoff is not cleanup authority; owner GC handles deletion.
+	if dgd == nil {
+		setReadyCondition(deployment, v1beta1.DGDStatePending, "Waiting for the matching DynamoGraphDeployment")
+		return ctrl.Result{}, nil
 	}
 
 	// Cleanup follows DGD handoff and owned Grove observations, but precedes downloads
@@ -427,7 +434,8 @@ func resolveWorkloadCapacity(
 		if role := component.ComponentRole(v1beta1.ComponentRoleLPXConductor); role != nil && role.Replicas != nil {
 			for index := range pcsg.Spec.Replicas {
 				name := grovecommon.GeneratePodCliqueName(grovecommon.ResourceNameReplica{Name: pcsg.Name, Replica: int(index)}, plan.CyborgTemplate)
-				if clique := pclqs[name]; clique == nil || clique.Spec.Replicas != *role.Replicas {
+				// A fabric-pod placement owns the capacity of its PodClique.
+				if clique := pclqs[name]; clique == nil || (!hasCyborgPlacement(clique) && clique.Spec.Replicas != *role.Replicas) {
 					required = true
 				}
 			}
@@ -534,7 +542,9 @@ func (r *graphReconciler) reconcileWorkloadCapacity(
 	for index := range pcsg.Spec.Replicas {
 		name := grovecommon.GeneratePodCliqueName(grovecommon.ResourceNameReplica{Name: pcsg.Name, Replica: int(index)}, plan.CyborgTemplate)
 		pclq := pclqs[name]
-		if pclq == nil {
+
+		// A fabric-pod placement owns the capacity of its PodClique.
+		if pclq == nil || hasCyborgPlacement(pclq) {
 			continue
 		}
 

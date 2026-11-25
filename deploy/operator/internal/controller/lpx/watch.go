@@ -63,12 +63,21 @@ func (r *graphReconciler) setupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("register LPR owner UID index: %w", err)
 	}
 
-	return ctrlBuilder.Owns(&corev1.Service{}).
+	ctrlBuilder = ctrlBuilder.Owns(&corev1.Service{}).
 		Owns(&grovev1alpha1.PodCliqueSet{}).
 		Watches(&grovev1alpha1.PodClique{}, handler.EnqueueRequestsFromMapFunc(mapChildToLPXGraphDeployment), builder.WithPredicates(podCliquePredicate())).
 		Watches(&grovev1alpha1.PodCliqueScalingGroup{}, handler.EnqueueRequestsFromMapFunc(mapChildToLPXGraphDeployment), builder.WithPredicates(podCliqueScalingGroupPredicate())).
 		Watches(&lpxv1alpha1.LPUPipelineRequest{}, handler.EnqueueRequestsFromMapFunc(mapChildToLPXGraphDeployment)).
-		Complete(r)
+		// Fabric-pod placement pins each Cyborg Pod that Grove creates.
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(mapChildToLPXGraphDeployment), builder.WithPredicates(predicate.NewPredicateFuncs(hasCyborgPlacement)))
+
+	// Node labels define the fabric pods. Namespace-restricted mode cannot read Nodes,
+	// and renderPodCliqueSet then rejects the placement annotation.
+	if r.config.Namespace.Restricted == "" {
+		ctrlBuilder = ctrlBuilder.WatchesMetadata(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.mapNodeToLPXGraphDeployments), builder.WithPredicates(fabricPodNodePredicate()))
+	}
+
+	return ctrlBuilder.Complete(r)
 }
 
 func pipelineRequestOwnerUID(obj client.Object) []string {
@@ -109,6 +118,21 @@ func mapChildToLPXGraphDeployment(_ context.Context, obj client.Object) []ctrl.R
 		return nil
 	}
 	return []ctrl.Request{{Namespace: obj.GetNamespace(), Name: deploymentName}}
+}
+
+// mapNodeToLPXGraphDeployments wakes every LPX deployment, because a Node label
+// change can add or remove a fabric pod for any Cyborg template.
+func (r *graphReconciler) mapNodeToLPXGraphDeployments(ctx context.Context, _ client.Object) []ctrl.Request {
+	deployments := &v1alpha1.LPXGraphDeploymentList{}
+	if err := r.List(ctx, deployments); err != nil {
+		ctrl.LoggerFrom(ctx).Error(err, "Unable to list LPX deployments for a fabric pod Node change")
+		return nil
+	}
+	requests := make([]ctrl.Request, 0, len(deployments.Items))
+	for index := range deployments.Items {
+		requests = append(requests, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(&deployments.Items[index])})
+	}
+	return requests
 }
 
 // lpxGraphDeploymentPredicate observes every field that grants publication authority.
@@ -203,6 +227,28 @@ func podCliqueScalingGroupPredicate() predicate.Funcs {
 				!maps.Equal(oldPCSG.Labels, newPCSG.Labels) ||
 				!apiequality.Semantic.DeepEqual(oldPCSG.OwnerReferences, newPCSG.OwnerReferences) ||
 				!apiequality.Semantic.DeepEqual(oldPCSG.DeletionTimestamp, newPCSG.DeletionTimestamp)
+		},
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
+}
+
+// hasCyborgPlacement selects the Cyborg PodCliques, and their Pods, that this
+// controller places by fabric pod. Grove copies the label of the PodClique
+// template to the PodClique and to its Pods.
+func hasCyborgPlacement(obj client.Object) bool {
+	return obj.GetLabels()[cyborgPlacementLabel] != ""
+}
+
+// fabricPodNodePredicate passes the Node label changes that can change the fabric
+// pods or the Nodes that a Cyborg template can select in them. A Node status
+// update must not start a pass for every LPX deployment.
+func fabricPodNodePredicate() predicate.Funcs {
+	hasFabricPod := func(obj client.Object) bool { return obj.GetLabels()[fabricPodLabel] != "" }
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool { return hasFabricPod(e.Object) },
+		DeleteFunc: func(e event.DeleteEvent) bool { return hasFabricPod(e.Object) },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return (hasFabricPod(e.ObjectOld) || hasFabricPod(e.ObjectNew)) && !maps.Equal(e.ObjectOld.GetLabels(), e.ObjectNew.GetLabels())
 		},
 		GenericFunc: func(event.GenericEvent) bool { return false },
 	}
