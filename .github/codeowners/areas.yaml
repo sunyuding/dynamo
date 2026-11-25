@@ -1322,6 +1322,10 @@ shared:
   owners:
   - operator
   - ops
+- glob: deploy/operator/output-copier/Dockerfile
+  owners:
+  - operator
+  - ops
 - glob: deploy/inference-gateway/ext-proc/Dockerfile
   owners:
   - epp
